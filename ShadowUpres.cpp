@@ -44,6 +44,8 @@
 /* General */
 #include <iostream>
 #include <vector>
+#include <chrono>
+#include <thread>
 /* FFmpeg */
 extern "C" {
     #include <libavcodec/avcodec.h>
@@ -62,6 +64,9 @@ extern "C" {
 /* Global definitions */
 #define MY_AV_ALLIGN 1
 #define INBUF_SIZE 4096
+#define VERBOSE_DEBUG 0
+#define OPENCV_MODE 0
+#define SDL_MODE 1
 
 /* Function headers */
 static void pgm_save(unsigned char* buf, int wrap, int xsize, int ysize, const char* filename);
@@ -88,7 +93,25 @@ int main(int argc, char** argv)
     //const char* filename = "E:\\Dev\\ProjectUpres\\ShadowUpres\\x64\\Debug\\test2.mp4";
     //const char* filename = "E:\\Dev\\ProjectUpres\\ShadowUpres\\x64\\Debug\\test3.mkv";
     const char* outfilename = "E:\\Dev\\ProjectUpres\\ShadowUpres\\x64\\Debug\\out";
+
+    /* Hardware decoding 
+        ref1: https://github.com/FFmpeg/FFmpeg/blob/release/4.1/doc/examples/hw_decode.c 
+        ref2: https://stackoverflow.com/questions/57211846/decoding-to-specific-pixel-format-in-ffmpeg-with-c */
+    std::cout << "Listing compatable hardware types: ";
+    enum AVHWDeviceType type = AV_HWDEVICE_TYPE_NONE;
+    while ((type = av_hwdevice_iterate_types(type)) != AV_HWDEVICE_TYPE_NONE)
+        std::cout << av_hwdevice_get_type_name(type) << ", ";
+    std::cout << std::endl;
     
+    /* Initialize SDI */
+    retCode = SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER);
+    if (retCode != 0)
+    {
+        /* Error while initializing SDL */
+        std::cout << "Could not initialize SDL - " << SDL_GetError() << std::endl ;
+        return retCode;
+    }
+
     /* Extract the decoder from video */
     static AVFormatContext* ifmt_ctx = NULL;
     retCode = avformat_open_input(&ifmt_ctx, filename, NULL, NULL);
@@ -169,7 +192,49 @@ int main(int argc, char** argv)
     const int dst_width = codec_strm_ctx->width;
     std::cout << "W: " << codec_strm_ctx->width << " L: " << codec_strm_ctx->height << std::endl;
 
-    /* initialize SWS context for software scaling */
+    /* Create a SDL window with the specified position, dimensions, and flags */
+    SDL_Window* screen = SDL_CreateWindow(
+        "SDL Video Player",
+        SDL_WINDOWPOS_UNDEFINED,
+        SDL_WINDOWPOS_UNDEFINED,
+        codec_ctx->width / 2,
+        codec_ctx->height / 2,
+        SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI
+    );
+    if (!screen)
+    {
+        /* Could not set video mode */
+       std::cout << "SDL: could not set video mode - exiting" << std::endl;
+        return -1;
+    }
+
+    /* Set the swap interval to update synchronized with the vertical retrace */
+    /* Valid arguments:
+        0  -> for immediate updates
+        1  -> for updates synchronized with the vertical retrace
+        -1 -> for adaptive vsync
+    */
+    SDL_GL_SetSwapInterval(1);
+
+    /* A structure that contains a rendering state */
+    SDL_Renderer* renderer = NULL;
+
+    /* Use this function to create a 2D rendering context for a window */
+    renderer = SDL_CreateRenderer(screen, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_TARGETTEXTURE);   // [3]
+
+    /* A structure that contains an efficient, driver-specific representation of pixel data */
+    SDL_Texture* texture = NULL;
+
+    /* Use this function to create a texture for a rendering context */
+    texture = SDL_CreateTexture(
+        renderer,
+        SDL_PIXELFORMAT_YV12,
+        SDL_TEXTUREACCESS_STREAMING,
+        codec_ctx->width,
+        codec_ctx->height
+    );
+
+    /* Initialize SWS context for software scaling */
     struct SwsContext* sws_ctx = sws_getContext(dst_width,
         dst_height,
         static_cast<AVPixelFormat>(codec_strm_ctx->format),
@@ -213,8 +278,36 @@ int main(int argc, char** argv)
         return -1;
     }
 
+    /* CV MODE */
     std::vector<uint8_t> framebuf(av_image_get_buffer_size(AV_PIX_FMT_RGB24, dst_width, dst_height, MY_AV_ALLIGN));
-    fill_picture(reinterpret_cast<AVPicture*>(cvframe), framebuf.data(), AV_PIX_FMT_RGB24, dst_width, dst_height);
+    if (OPENCV_MODE)
+    {        
+        fill_picture(reinterpret_cast<AVPicture*>(cvframe), framebuf.data(), AV_PIX_FMT_RGB24, dst_width, dst_height);
+    }
+    /* SDL MODE */
+    int numBytes;
+    uint8_t* buffer = NULL;
+    if (SDL_MODE)
+    {
+        numBytes = av_image_get_buffer_size(
+            AV_PIX_FMT_YUV420P,
+            codec_ctx->width,
+            codec_ctx->height,
+            32
+        );
+        buffer = (uint8_t*)av_malloc(numBytes * sizeof(uint8_t));
+
+        av_image_fill_arrays(
+            cvframe->data,
+            cvframe->linesize,
+            buffer,
+            AV_PIX_FMT_YUV420P,
+            codec_ctx->width,
+            codec_ctx->height,
+            32
+        );
+    }
+
     int frameFinished = 0;
     int ittr = 0;
     while (av_read_frame(ifmt_ctx, packet) >= 0)
@@ -222,26 +315,115 @@ int main(int argc, char** argv)
         /* Is this a packet from the video stream? */
         if (packet->stream_index == vstrm_idx)
         {
-            std::cout << "stream index: " << packet->stream_index << " --video frame--" << std::endl;
+            if (VERBOSE_DEBUG)
+            {
+                std::cout << "stream index: " << packet->stream_index << " --video frame--" << std::endl;
+                std::cout << "packet size: " << packet->size << std::endl;
+                std::cout << "packet duration: " << packet->duration << std::endl;
+                std::cout << "packet length (s): " << packet->duration * av_q2d(ifmt_ctx->streams[vstrm_idx]->time_base) << std::endl;
+                std::cout << "packet position: " << packet->pos << std::endl;
+                std::cout << "packet buffer size: " << packet->buf->size << std::endl;
+                std::cout << "packet data size: " << sizeof(packet->data) / sizeof(packet->data[0]) << std::endl;
+            }
             /* Decode video frame */
-            std::cout << "packet size: " << packet->size << std::endl;
-            std::cout << "packet duration: " << packet->duration << std::endl;
-            std::cout << "packet length (s): " << packet->duration * av_q2d(ifmt_ctx->streams[vstrm_idx]->time_base) << std::endl;
-            std::cout << "packet position: " << packet->pos << std::endl;
-            std::cout << "packet buffer size: " << packet->buf->size << std::endl;
-            std::cout << "packet data size: " << sizeof(packet->data) / sizeof(packet->data[0]) << std::endl;
             av_packet_rescale_ts(packet, ifmt_ctx->streams[vstrm_idx]->time_base, codec_ctx->time_base);
             frameFinished = avcodec_send_packet(codec_ctx, packet);
-            std::cout << "avcodec_send_packet: " << frameFinished << " : " << av_make_error_string(err_buf, AV_ERROR_MAX_STRING_SIZE, frameFinished) << std::endl;
-            frameFinished = avcodec_receive_frame(codec_ctx, frame);
-            std::cout << "avcodec_receive_frame: " << frameFinished << " : " << av_make_error_string(err_buf, AV_ERROR_MAX_STRING_SIZE, frameFinished) << std::endl;
-            /* convert frame to OpenCV matrix */
-            sws_scale(sws_ctx, frame->data, frame->linesize, 0, frame->height, cvframe->data, cvframe->linesize);
+            if (VERBOSE_DEBUG)
+                std::cout << "avcodec_send_packet: " << frameFinished << " : " << av_make_error_string(err_buf, AV_ERROR_MAX_STRING_SIZE, frameFinished) << std::endl;
+
+            /* Used to handle quit event */
+            SDL_Event event;
+
+            /* Get clip fps */
+            double vfps = av_q2d(ifmt_ctx->streams[vstrm_idx]->r_frame_rate);
+            /* Get clip sleep time in ms (truncate) */
+            long sleep_time = static_cast<long>(1000.0 / vfps);
+            if (VERBOSE_DEBUG)
+                std::cout << "sleep_time: " << sleep_time << std::endl;
+            /* Decoding loop in case a packet has multiple frames */
+            while (frameFinished >= 0)
             {
-                cv::Mat image(dst_height, dst_width, CV_8UC3, framebuf.data(), cvframe->linesize[0]);
-                cv::imshow("press ESC to exit", image);
-                if (cv::waitKey(1) == 0x1b)
+                /* Get decoded frame */
+                frameFinished = avcodec_receive_frame(codec_ctx, frame);
+                /* Check for errors */
+                if (frameFinished == AVERROR(EAGAIN) || frameFinished == AVERROR_EOF)
                     break;
+                else if (frameFinished < 0)
+                {
+                    std::cout << "Error while decoding." << std::endl;
+                    return -1;
+                }
+                if (VERBOSE_DEBUG)
+                    std::cout << "avcodec_receive_frame: " << frameFinished << " : " << av_make_error_string(err_buf, AV_ERROR_MAX_STRING_SIZE, frameFinished) << std::endl;
+                /* Convert frame to OpenCV matrix */
+                sws_scale(sws_ctx, frame->data, frame->linesize, 0, frame->height, cvframe->data, cvframe->linesize);
+                /* CV MODE */
+                if(OPENCV_MODE)
+                {
+                    /* Create CV matrix and move to GPU memory */
+                    cv::UMat uimage(cv::Mat(dst_height, dst_width, CV_8UC3, framebuf.data(), cvframe->linesize[0]).getUMat(cv::ACCESS_READ));
+                    /* Display image */
+                    cv::imshow("press ESC to exit 2", uimage);
+                    /* Wait for 1 ms to check for key perss */
+                    if (cv::waitKey(1) == 0x1b)
+                        break;
+                    /* Wait for some time before next frame, 10ms */
+                    std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time - 10));
+                    /* Use SDL to display, Ref: https://github.com/rambodrahmani/ffmpeg-video-player/blob/master/tutorial02/tutorial02.c */
+                }
+                /* SDL MODE */
+                if(SDL_MODE)
+                {
+                    /* sleep: usleep won't work when using SDL_CreateWindow */
+                    //usleep(sleep_time);
+                    /* Use SDL_Delay in milliseconds to allow for cpu scheduling */
+                    SDL_Delay((1000 * sleep_time) - 10);
+                    /* The simplest struct in SDL. It contains only four shorts. x, y which 
+                     holds the position and w, h which holds width and height.It's important 
+                     to note that 0, 0 is the upper-left corner in SDL. So a higher y-value 
+                     means lower, and the bottom-right corner will have the coordinate x + w, y + h. */
+                    SDL_Rect rect;
+                    rect.x = 0;
+                    rect.y = 0;
+                    rect.w = codec_ctx->width;
+                    rect.h = codec_ctx->height;
+                    if (VERBOSE_DEBUG)
+                    {
+                        std::cout << "Frame " << av_get_picture_type_char(frame->pict_type);
+                        std::cout << " (" << codec_ctx->frame_number << ") pts " << frame->pts;
+                        std::cout << " dts " << frame->pkt_dts << " key_frame " << frame->key_frame;
+                        std::cout << " [coded_picture_number " << frame->coded_picture_number;
+                        std::cout << ", display_picture_number " << frame->display_picture_number;
+                        std::cout << ", " << codec_ctx->width << "x" << codec_ctx->height << "]" << std::endl;
+                    }
+
+                    /* Use this function to update a rectangle within a planar YV12 or IYUV texture with new pixel data */
+                    SDL_UpdateYUVTexture(
+                        texture,            /* the texture to update */
+                        &rect,              /* a pointer to the rectangle of pixels to update, or NULL to update the entire texture */
+                        cvframe->data[0],      /* the raw pixel data for the Y plane */
+                        cvframe->linesize[0],  /* the number of bytes between rows of pixel data for the Y plane */
+                        cvframe->data[1],      /* the raw pixel data for the U plane */
+                        cvframe->linesize[1],  /* the number of bytes between rows of pixel data for the U plane */
+                        cvframe->data[2],      /* the raw pixel data for the V plane */
+                        cvframe->linesize[2]   /* the number of bytes between rows of pixel data for the V plane */
+                    );
+
+                    /* clear the current rendering target with the drawing color */
+                    SDL_RenderClear(renderer);
+
+                    /* copy a portion of the texture to the current rendering target */
+                    SDL_RenderCopy(
+                        renderer,   /* the rendering context */
+                        texture,    /* the source texture */
+                        NULL,       /* the source SDL_Rect structure or NULL for the entire texture */
+                        NULL        /* the destination SDL_Rect structure or NULL for the entire rendering */
+                                    /* target; the texture will be stretched to fill the given rectangle */
+                    );
+
+                    /* update the screen with any rendering performed since the previous call */
+                    SDL_RenderPresent(renderer);
+                }
             }
             /* Did we get a video frame? */
             //if (frameFinished) 
@@ -256,8 +438,10 @@ int main(int argc, char** argv)
         }
         else if (packet->stream_index == astrm_idx)
         {
-            std::cout << "stream index: " << packet->stream_index << "--audio frame--" << std::endl;
+            if (VERBOSE_DEBUG)
+                std::cout << "stream index: " << packet->stream_index << "--audio frame--" << std::endl;
             /* Do audio stuff */
+            /* Ref: https://github.com/leandromoreira/ffmpeg-libav-tutorial#audio---what-you-listen */
         }
         av_packet_unref(packet);
     }
@@ -305,7 +489,7 @@ static void decode(AVCodecContext* dec_ctx, AVFrame* frame, AVPacket* pkt, const
             exit(1);
         }
 
-        printf("saving frame %3d\n", dec_ctx->frame_number);
+        std::cout << "saving frame " << dec_ctx->frame_number << std::endl;
         fflush(stdout);
 
         /* the picture is allocated by the decoder. no need to
