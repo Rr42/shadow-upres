@@ -250,6 +250,7 @@ int main(int argc, char** argv)
 
     int frameFinished = 0;
     int ittr = 0;
+    bool FLAG_EXIT = false;
     while (av_read_frame(ifmt_ctx, packet) >= 0)
     {
         /* Is this a packet from the video stream? */
@@ -302,12 +303,16 @@ int main(int argc, char** argv)
                 if(OPENCV_MODE)
                 {
                     /* Create CV matrix and move to GPU memory */
-                    cv::UMat uimage(cv::Mat(dst_height, dst_width, CV_8UC3, framebuf.data(), cvframe->linesize[0]).getUMat(cv::ACCESS_READ));
+                    cv::UMat* uimage = NULL;
+                    uimage = new cv::UMat(cv::Mat(dst_height, dst_width, CV_8UC3, framebuf.data(), cvframe->linesize[0]).getUMat(cv::ACCESS_READ));
                     /* Display image */
-                    cv::imshow("press ESC to exit 2", uimage);
+                    cv::imshow("press ESC to exit 2", *uimage);
                     /* Wait for 1 ms to check for key perss */
                     if (cv::waitKey(1) == 0x1b)
+                    {
+                        FLAG_EXIT = true;
                         break;
+                    }
                     /* Wait for some time before next frame, 10ms */
                     std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time - 10));
                     /* Use SDL to display, Ref: https://github.com/rambodrahmani/ffmpeg-video-player/blob/master/tutorial02/tutorial02.c */
@@ -383,6 +388,8 @@ int main(int argc, char** argv)
             /* Ref: https://github.com/leandromoreira/ffmpeg-libav-tutorial#audio---what-you-listen */
         }
         av_packet_unref(packet);
+        if (FLAG_EXIT)
+            break;
     }
 
     av_frame_free(&cvframe);
