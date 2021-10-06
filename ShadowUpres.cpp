@@ -11,6 +11,29 @@
 /* Core include */
 #include "ShadowUpres.h"
 
+//Refresh Event
+#define REFRESH_EVENT  (SDL_USEREVENT + 1)
+//Break
+#define BREAK_EVENT  (SDL_USEREVENT + 2)
+int thread_exit = 0;
+
+int refresh_video(void* opaque) {
+    thread_exit = 0;
+    while (thread_exit == 0) {
+        SDL_Event event;
+        event.type = REFRESH_EVENT;
+        SDL_PushEvent(&event);
+        SDL_Delay(40);
+    }
+    thread_exit = 0;
+    //Break
+    SDL_Event event;
+    event.type = BREAK_EVENT;
+    SDL_PushEvent(&event);
+    return 0;
+}
+
+
 /* ShadowUpres core function */
 int main(int argc, char** argv)
 {
@@ -136,7 +159,7 @@ int main(int argc, char** argv)
         SDL_WINDOWPOS_UNDEFINED,
         codec_ctx->width / 2,
         codec_ctx->height / 2,
-        SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI
+        SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE
     );
     if (!screen)
     {
@@ -251,6 +274,20 @@ int main(int argc, char** argv)
     int frameFinished = 0;
     int ittr = 0;
     bool FLAG_EXIT = false;
+    /* Vars. for general fuinctions */
+    double vfps = 0;
+    long sleep_time = 0;
+    /* Vars. for CV MODE */
+    cv::UMat* uimage = NULL;
+    /* Vars. for SDL MODE */
+    SDL_Rect rect;
+    /* Used to handle quit event */
+    SDL_Event event;
+    SDL_Thread* refresh_thread = SDL_CreateThread(refresh_video, NULL, NULL);
+    const uint8_t* SDL_key_status;
+    int* numkeys;
+    int screen_w = codec_ctx->width;
+    int screen_h = codec_ctx->height;
     while (av_read_frame(ifmt_ctx, packet) >= 0)
     {
         /* Is this a packet from the video stream? */
@@ -272,14 +309,10 @@ int main(int argc, char** argv)
             if (VERBOSE_DEBUG)
                 std::cout << "avcodec_send_packet: " << frameFinished << " : " << av_make_error_string(err_buf, AV_ERROR_MAX_STRING_SIZE, frameFinished) << std::endl;
 
-            /* Used to handle quit event */
-            SDL_Event event;
-
             /* Get clip fps */
-            double vfps = av_q2d(ifmt_ctx->streams[vstrm_idx]->r_frame_rate);
+            vfps = av_q2d(ifmt_ctx->streams[vstrm_idx]->r_frame_rate);
             /* Get clip sleep time in ms (truncate) */
-            /* [TBD] Move var declarations outside loop */
-            long sleep_time = static_cast<long>(1000.0 / vfps);
+            sleep_time = static_cast<long>(1000.0 / vfps);
             if (VERBOSE_DEBUG)
                 std::cout << "sleep_time: " << sleep_time << std::endl;
             /* Decoding loop in case a packet has multiple frames */
@@ -303,10 +336,10 @@ int main(int argc, char** argv)
                 if(OPENCV_MODE)
                 {
                     /* Create CV matrix and move to GPU memory */
-                    cv::UMat* uimage = NULL;
                     uimage = new cv::UMat(cv::Mat(dst_height, dst_width, CV_8UC3, framebuf.data(), cvframe->linesize[0]).getUMat(cv::ACCESS_READ));
                     /* Display image */
                     cv::imshow("press ESC to exit 2", *uimage);
+                    delete uimage;
                     /* Wait for 1 ms to check for key perss */
                     if (cv::waitKey(1) == 0x1b)
                     {
@@ -320,53 +353,86 @@ int main(int argc, char** argv)
                 /* SDL MODE */
                 if(SDL_MODE)
                 {
-                    /* sleep: usleep won't work when using SDL_CreateWindow */
-                    //usleep(sleep_time);
-                    /* Use SDL_Delay in milliseconds to allow for cpu scheduling */
-                    if (VERBOSE_DEBUG)
-                        std::cout << "Start SDL sleep: " << sleep_time - 10 << std::endl;
-                    SDL_Delay(sleep_time - 10);
-                    /* The simplest struct in SDL. It contains only four shorts. x, y which 
-                     holds the position and w, h which holds width and height.It's important 
-                     to note that 0, 0 is the upper-left corner in SDL. So a higher y-value 
-                     means lower, and the bottom-right corner will have the coordinate x + w, y + h. */
-                    SDL_Rect rect;
-                    rect.x = 0;
-                    rect.y = 0;
-                    rect.w = codec_ctx->width;
-                    rect.h = codec_ctx->height;
-                    if (VERBOSE_DEBUG)
+                    SDL_WaitEvent(&event);
+                    switch (event.type)
                     {
-                        std::cout << "Frame " << av_get_picture_type_char(frame->pict_type);
-                        std::cout << " (" << codec_ctx->frame_number << ") pts " << frame->pts;
-                        std::cout << " dts " << frame->pkt_dts << " key_frame " << frame->key_frame;
-                        std::cout << " [coded_picture_number " << frame->coded_picture_number;
-                        std::cout << ", display_picture_number " << frame->display_picture_number;
-                        std::cout << ", " << codec_ctx->width << "x" << codec_ctx->height << "]" << std::endl;
+                    case REFRESH_EVENT:
+                        /* The simplest struct in SDL. It contains only four shorts. x, y which
+                         holds the position and w, h which holds width and height.It's important
+                         to note that 0, 0 is the upper-left corner in SDL. So a higher y-value
+                         means lower, and the bottom-right corner will have the coordinate x + w, y + h. */
+                            rect.x = 0;
+                            rect.y = 0;
+                            rect.w = screen_w;
+                            rect.h = screen_h;
+                            if (VERBOSE_DEBUG)
+                            {
+                                std::cout << "Frame " << av_get_picture_type_char(frame->pict_type);
+                                std::cout << " (" << codec_ctx->frame_number << ") pts " << frame->pts;
+                                std::cout << " dts " << frame->pkt_dts << " key_frame " << frame->key_frame;
+                                std::cout << " [coded_picture_number " << frame->coded_picture_number;
+                                std::cout << ", display_picture_number " << frame->display_picture_number;
+                                std::cout << ", " << screen_w << "x" << screen_h << "]" << std::endl;
+                            }
+
+                            /* Update a rectangle with new pixel data */
+                            SDL_UpdateTexture(
+                                texture,
+                                &rect,
+                                cvframe->data[0],
+                                cvframe->linesize[0]
+                            );
+
+                            /* Clear the current rendering target with the drawing color */
+                            SDL_RenderClear(renderer);
+
+                            /* Copy a portion of the texture to the current rendering target */
+                            SDL_RenderCopy(
+                                renderer,   /* the rendering context */
+                                texture,    /* the source texture */
+                                NULL,       /* the source SDL_Rect structure or NULL for the entire texture */
+                                NULL        /* the destination SDL_Rect structure or NULL for the entire rendering */
+                                            /* target; the texture will be stretched to fill the given rectangle */
+                            );
+
+                            /* Update the screen with any rendering performed since the previous call */
+                            SDL_RenderPresent(renderer);
+
+                            /* Use SDL_Delay in milliseconds to allow for cpu scheduling */
+                            if (VERBOSE_DEBUG)
+                                std::cout << "Start SDL sleep: " << sleep_time - 10 << std::endl;
+                            SDL_Delay(sleep_time - 10);
+                            break;
+                    case SDL_WINDOWEVENT:
+                        /* [BUG] Cannot handle resizing (crashes above a size) (works with like commented) */
+                        //SDL_GetWindowSize(screen, &screen_w, &screen_h);
+                        //screen_w == codec_ctx->width
+                        //screen_h == codec_ctx->height
+                        break;
+                    case SDL_KEYDOWN:
+                    case SDL_KEYUP:
+                        numkeys = new int(0);
+                        SDL_key_status = SDL_GetKeyboardState(numkeys);
+                        if (numkeys != NULL )
+                            if (*numkeys >= SDL_SCANCODE_ESCAPE)
+                                if (SDL_key_status[SDL_SCANCODE_ESCAPE])
+                                {
+                                    FLAG_EXIT = true;
+                                    thread_exit = 1;
+                                }
+                        delete numkeys;
+                        break;
+                    case SDL_QUIT:
+                        thread_exit = 1;
+                    case BREAK_EVENT:
+                        FLAG_EXIT = true;
+                        break;
+                    default:
+                        break;
                     }
 
-                    /* Update a rectangle with new pixel data */
-                    SDL_UpdateTexture(
-                        texture,
-                        &rect,
-                        cvframe->data[0],
-                        cvframe->linesize[0]
-                    );
-
-                    /* Clear the current rendering target with the drawing color */
-                    SDL_RenderClear(renderer);
-
-                    /* Copy a portion of the texture to the current rendering target */
-                    SDL_RenderCopy(
-                        renderer,   /* the rendering context */
-                        texture,    /* the source texture */
-                        NULL,       /* the source SDL_Rect structure or NULL for the entire texture */
-                        NULL        /* the destination SDL_Rect structure or NULL for the entire rendering */
-                                    /* target; the texture will be stretched to fill the given rectangle */
-                    );
-
-                    /* Update the screen with any rendering performed since the previous call */
-                    SDL_RenderPresent(renderer);
+                    if (FLAG_EXIT)
+                        break;
                 }
             }
             /* Did we get a video frame? */
@@ -398,6 +464,7 @@ int main(int argc, char** argv)
     sws_freeContext(sws_ctx);
     avcodec_free_context(&codec_ctx);
     avformat_close_input(&ifmt_ctx);
+    SDL_Quit();
 
     return 0;
 }
