@@ -8,71 +8,8 @@
 /*  Program execution begins and ends there.                                          */
 /**************************************************************************************/
 
-/* External libraries to link */
-/* Windows libs */
-#pragma comment(lib, "bcrypt.lib")
-#pragma comment(lib, "mfplat.lib")
-#pragma comment(lib, "crypt32.lib")
-#pragma comment(lib, "strmiids.lib")
-#pragma comment(lib, "mfuuid.lib")
-#pragma comment(lib, "bcrypt.lib")
-#pragma comment(lib, "Ws2_32.lib")
-#pragma comment(lib, "security.lib")
-#pragma comment(lib, "Setupapi.lib")
-#pragma comment(lib, "winmm.lib")
-#pragma comment(lib, "version.lib")
-#pragma comment(lib, "Imm32.lib")
-/* Opencv libs */
-#pragma comment(lib, "opencv_world451d.lib")
-/* ffmpeg libs */
-#pragma comment(lib, "avformat.lib")
-#pragma comment(lib, "avfilter.lib")
-#pragma comment(lib, "avdevice.lib")
-#pragma comment(lib, "vpxmt.lib")
-#pragma comment(lib, "swscale.lib")
-#pragma comment(lib, "swresample.lib")
-#pragma comment(lib, "opus.lib")
-#pragma comment(lib, "avutil.lib")
-#pragma comment(lib, "avcodec.lib")
-/* SDL2 libs */
-#pragma comment(lib, "SDL2main.lib")
-#pragma comment(lib, "SDL2.lib")
-
-#define _CRT_SECURE_NO_DEPRECATE
-
-/* Includes */
-/* General */
-#include <iostream>
-#include <vector>
-#include <chrono>
-#include <thread>
-/* FFmpeg */
-extern "C" {
-    #include <libavcodec/avcodec.h>
-    #include <libavformat/avformat.h>
-    #include <libavutil/avutil.h>
-    #include <libavutil/pixdesc.h>
-    #include <libswscale/swscale.h>
-    #include <libavutil/imgutils.h>
-}
-/* OpenCV */
-#include <opencv2/core.hpp>
-#include <opencv2/highgui.hpp>
-/* SDL2 */
-#include <sdl2/SDL.h>
-
-/* Global definitions */
-#define MY_AV_ALLIGN 1
-#define INBUF_SIZE 4096
-#define VERBOSE_DEBUG 0
-#define OPENCV_MODE 0
-#define SDL_MODE 1
-
-/* Function headers */
-static void pgm_save(unsigned char* buf, int wrap, int xsize, int ysize, const char* filename);
-static void decode(AVCodecContext* dec_ctx, AVFrame* frame, AVPacket* pkt, const char* filename);
-static inline int fill_picture(AVPicture* picture, uint8_t* ptr, enum AVPixelFormat pix_fmt, int width, int height);
-static void SaveFrame(AVFrame* pFrame, int width, int height, int iFrame);
+/* Core include */
+#include "ShadowUpres.h"
 
 /* ShadowUpres core function */
 int main(int argc, char** argv)
@@ -220,6 +157,7 @@ int main(int argc, char** argv)
     SDL_Renderer* renderer = NULL;
 
     /* Use this function to create a 2D rendering context for a window */
+    SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
     renderer = SDL_CreateRenderer(screen, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_TARGETTEXTURE);   // [3]
 
     /* A structure that contains an efficient, driver-specific representation of pixel data */
@@ -228,8 +166,10 @@ int main(int argc, char** argv)
     /* Use this function to create a texture for a rendering context */
     texture = SDL_CreateTexture(
         renderer,
-        SDL_PIXELFORMAT_YV12,
+        SDL_PIXELFORMAT_RGB24,
+        //SDL_PIXELFORMAT_YV12,
         SDL_TEXTUREACCESS_STREAMING,
+        //SDL_TEXTUREACCESS_STATIC,
         codec_ctx->width,
         codec_ctx->height
     );
@@ -290,7 +230,7 @@ int main(int argc, char** argv)
     if (SDL_MODE)
     {
         numBytes = av_image_get_buffer_size(
-            AV_PIX_FMT_YUV420P,
+            AV_PIX_FMT_RGB24,
             codec_ctx->width,
             codec_ctx->height,
             32
@@ -301,7 +241,7 @@ int main(int argc, char** argv)
             cvframe->data,
             cvframe->linesize,
             buffer,
-            AV_PIX_FMT_YUV420P,
+            AV_PIX_FMT_RGB24,
             codec_ctx->width,
             codec_ctx->height,
             32
@@ -337,6 +277,7 @@ int main(int argc, char** argv)
             /* Get clip fps */
             double vfps = av_q2d(ifmt_ctx->streams[vstrm_idx]->r_frame_rate);
             /* Get clip sleep time in ms (truncate) */
+            /* [TBD] Move var declarations outside loop */
             long sleep_time = static_cast<long>(1000.0 / vfps);
             if (VERBOSE_DEBUG)
                 std::cout << "sleep_time: " << sleep_time << std::endl;
@@ -377,7 +318,9 @@ int main(int argc, char** argv)
                     /* sleep: usleep won't work when using SDL_CreateWindow */
                     //usleep(sleep_time);
                     /* Use SDL_Delay in milliseconds to allow for cpu scheduling */
-                    SDL_Delay((1000 * sleep_time) - 10);
+                    if (VERBOSE_DEBUG)
+                        std::cout << "Start SDL sleep: " << sleep_time - 10 << std::endl;
+                    SDL_Delay(sleep_time - 10);
                     /* The simplest struct in SDL. It contains only four shorts. x, y which 
                      holds the position and w, h which holds width and height.It's important 
                      to note that 0, 0 is the upper-left corner in SDL. So a higher y-value 
@@ -397,22 +340,18 @@ int main(int argc, char** argv)
                         std::cout << ", " << codec_ctx->width << "x" << codec_ctx->height << "]" << std::endl;
                     }
 
-                    /* Use this function to update a rectangle within a planar YV12 or IYUV texture with new pixel data */
-                    SDL_UpdateYUVTexture(
-                        texture,            /* the texture to update */
-                        &rect,              /* a pointer to the rectangle of pixels to update, or NULL to update the entire texture */
-                        cvframe->data[0],      /* the raw pixel data for the Y plane */
-                        cvframe->linesize[0],  /* the number of bytes between rows of pixel data for the Y plane */
-                        cvframe->data[1],      /* the raw pixel data for the U plane */
-                        cvframe->linesize[1],  /* the number of bytes between rows of pixel data for the U plane */
-                        cvframe->data[2],      /* the raw pixel data for the V plane */
-                        cvframe->linesize[2]   /* the number of bytes between rows of pixel data for the V plane */
+                    /* Update a rectangle with new pixel data */
+                    SDL_UpdateTexture(
+                        texture,
+                        &rect,
+                        cvframe->data[0],
+                        cvframe->linesize[0]
                     );
 
-                    /* clear the current rendering target with the drawing color */
+                    /* Clear the current rendering target with the drawing color */
                     SDL_RenderClear(renderer);
 
-                    /* copy a portion of the texture to the current rendering target */
+                    /* Copy a portion of the texture to the current rendering target */
                     SDL_RenderCopy(
                         renderer,   /* the rendering context */
                         texture,    /* the source texture */
@@ -421,7 +360,7 @@ int main(int argc, char** argv)
                                     /* target; the texture will be stretched to fill the given rectangle */
                     );
 
-                    /* update the screen with any rendering performed since the previous call */
+                    /* Update the screen with any rendering performed since the previous call */
                     SDL_RenderPresent(renderer);
                 }
             }
