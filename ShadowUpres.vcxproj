@@ -150,12 +150,14 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="SDLaudio.cpp" />
     <ClCompile Include="ShadowUpres.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="readme.md" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="SDLaudio.h" />
     <ClInclude Include="ShadowUpres.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

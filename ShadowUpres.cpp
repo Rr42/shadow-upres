@@ -10,29 +10,9 @@
 
 /* Core include */
 #include "ShadowUpres.h"
+#include "SDLaudio.h"
 
-//Refresh Event
-#define REFRESH_EVENT  (SDL_USEREVENT + 1)
-//Break
-#define BREAK_EVENT  (SDL_USEREVENT + 2)
-int thread_exit = 0;
-
-int refresh_video(void* opaque) {
-    thread_exit = 0;
-    while (thread_exit == 0) {
-        SDL_Event event;
-        event.type = REFRESH_EVENT;
-        SDL_PushEvent(&event);
-        SDL_Delay(40);
-    }
-    thread_exit = 0;
-    //Break
-    SDL_Event event;
-    event.type = BREAK_EVENT;
-    SDL_PushEvent(&event);
-    return 0;
-}
-
+std::atomic<int> thread_exit = 0;
 
 /* ShadowUpres core function */
 int main(int argc, char** argv)
@@ -42,7 +22,7 @@ int main(int argc, char** argv)
 
     //if (argc <= 1) 
     //{
-    //    std::cerr << "Usage: " << argv[0] << " <input file>" << std::endl;
+    //    std::cerr << "[ERROR] Usage: " << argv[0] << " <input file>" << std::endl;
     //    exit(0);
     //}
     //const char* filename = argv[1];
@@ -57,18 +37,46 @@ int main(int argc, char** argv)
     /* Hardware decoding 
         ref1: https://github.com/FFmpeg/FFmpeg/blob/release/4.1/doc/examples/hw_decode.c 
         ref2: https://stackoverflow.com/questions/57211846/decoding-to-specific-pixel-format-in-ffmpeg-with-c */
-    std::cout << "Listing compatable hardware types: ";
-    enum AVHWDeviceType type = AV_HWDEVICE_TYPE_NONE;
+    std::cout << "[DEBUG] Listing compatable hardware types: | ";
+    AVHWDeviceType type = AV_HWDEVICE_TYPE_NONE;
     while ((type = av_hwdevice_iterate_types(type)) != AV_HWDEVICE_TYPE_NONE)
-        std::cout << av_hwdevice_get_type_name(type) << ", ";
+        std::cout << av_hwdevice_get_type_name(type) << " | ";
     std::cout << std::endl;
-    
-    /* Initialize SDI */
+
+    /* Initialize SDL */
     retCode = SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER);
     if (retCode != 0)
     {
         /* Error while initializing SDL */
-        std::cout << "Could not initialize SDL - " << SDL_GetError() << std::endl ;
+        std::cerr << "[ERROR] Could not initialize SDL - " << SDL_GetError() << std::endl ;
+        return retCode;
+    }
+
+    std::cout << "[DEBUG] Listing compatable audio drivers and divices: " << std::endl;
+    SDL_AudioQuit();
+    int adrcount = SDL_GetNumAudioDrivers();
+    const char* driver_name;
+    for (int i = 0; i < adrcount; ++i)
+    {
+        driver_name = SDL_GetAudioDriver(i);
+        if (SDL_AudioInit(driver_name))
+        {
+            std::cerr << "[ERROR] Audio driver failed to initialize: " << driver_name << std::endl;
+            continue;
+        }
+        std::cout << "         Driver [" << i << "]: " << driver_name << std::endl;
+        int adcount = SDL_GetNumAudioDevices(0);
+        for (int i = 0; i < adcount; ++i)
+            std::cout << "          Device [" << i << "]: " << SDL_GetAudioDeviceName(i, 0) << std::endl;
+        SDL_AudioQuit();
+    }
+
+    /* Select audio driver to use */
+    driver_name = SDL_GetAudioDriver(AUDIO_DRIVER_ID);
+    retCode = SDL_AudioInit(driver_name);
+    if (retCode)
+    {
+        std::cerr << "[ERROR] Audio driver failed to initialize: " << driver_name << std::endl;
         return retCode;
     }
 
@@ -78,7 +86,7 @@ int main(int argc, char** argv)
     if (retCode < 0)
     {
         //av_log(NULL, AV_LOG_ERROR, "Cannot open input file\n");
-        std::cerr << "Cannot open input file" << std::endl;
+        std::cerr << "[ERROR] Cannot open input file" << std::endl;
         return retCode;
     }
 
@@ -86,7 +94,7 @@ int main(int argc, char** argv)
     if (retCode < 0) 
     {
         //av_log(NULL, AV_LOG_ERROR, "Cannot find stream information\n");
-        std::cerr << "Cannot find stream information" << std::endl;
+        std::cerr << "[ERROR] Cannot find stream information" << std::endl;
         return retCode;
     }
 
@@ -103,12 +111,15 @@ int main(int argc, char** argv)
         if (vstrm_idx != -1 && astrm_idx != -1)
             break;
     }
-    if (astrm_idx < 0)
-        std::cout << "Warning unable to find audio stream: astrm_idx=" << astrm_idx;
     if (vstrm_idx < 0)
     {
-        std::cerr << "Failed unable to find video stream: vstrm_idx=" << vstrm_idx;
+        std::cerr << "[ERROR] Failed unable to find video stream: vstrm_idx=" << vstrm_idx;
         return vstrm_idx;
+    }
+    if (astrm_idx < 0)
+    {
+        std::cout << "[WARNING] Warning unable to find audio stream: astrm_idx=" << astrm_idx;
+        return astrm_idx;
     }
 
     /* Find the video decoder */
@@ -116,15 +127,30 @@ int main(int argc, char** argv)
     const AVCodec* codec = avcodec_find_decoder(codec_strm_ctx->codec_id);
     if (!codec)
     {
-        std::cerr << "Codec not found" << std::endl;
+        std::cerr << "[ERROR] Video codec not found" << std::endl;
+        exit(1);
+    }
+    /* Find the audio decoder */
+    AVCodecParameters* acodec_strm_ctx = ifmt_ctx->streams[astrm_idx]->codecpar;
+    const AVCodec* acodec = avcodec_find_decoder(acodec_strm_ctx->codec_id);
+    if (!acodec)
+    {
+        std::cerr << "[ERROR] Audio codec not found" << std::endl;
         exit(1);
     }
 
-    /* Create codec context based on codec */
+    /* Create video codec context based on codec */
     AVCodecContext* codec_ctx = avcodec_alloc_context3(codec);
     if (!codec_ctx)
     {
-        std::cerr << "Could not allocate video codec context" << std::endl;
+        std::cerr << "[ERROR] Could not allocate video codec context" << std::endl;
+        exit(1);
+    }
+    /* Create audio codec context based on acodec */
+    AVCodecContext* acodec_ctx = avcodec_alloc_context3(acodec);
+    if (!acodec_ctx)
+    {
+        std::cerr << "[ERROR] Could not allocate audio codec context" << std::endl;
         exit(1);
     }
 
@@ -132,25 +158,77 @@ int main(int argc, char** argv)
        MUST be initialized there because this information is not
        available in the bitstream. */
 
-    /* Copy codec parameters to codec context */
+    /* Copy video codec parameters to codec context */
     retCode = avcodec_parameters_to_context(codec_ctx, codec_strm_ctx);
     if (retCode < 0)
     {
-        std::cerr << "Failed to copy decoder parameters to input decoder context for stream " << vstrm_idx << std::endl;
+        std::cerr << "[ERROR] Failed to copy video decoder parameters to input decoder context for stream " << vstrm_idx << std::endl;
+        return retCode;
+    }
+    /* Copy audio codec parameters to codec context */
+    retCode = avcodec_parameters_to_context(acodec_ctx, acodec_strm_ctx);
+    if (retCode < 0)
+    {
+        std::cerr << "[ERROR] Failed to copy audio decoder parameters to input decoder context for stream " << vstrm_idx << std::endl;
         return retCode;
     }
 
-    /* Initialize the codec context to use the given codec */
+    /* Initialize the video codec context to use the given codec */
     retCode = avcodec_open2(codec_ctx, codec, NULL);
     if (retCode < 0)
     {
-        std::cerr << "Failed to open codec through avcodec_open2 for stream " << vstrm_idx << std::endl;
+        std::cerr << "[ERROR] Failed to open video codec through avcodec_open2 for stream " << vstrm_idx << std::endl;
         return retCode;
     }
+    /* Initialize the audio codec context to use the given acodec */
+    retCode = avcodec_open2(acodec_ctx, acodec, NULL);
+    if (retCode < 0)
+    {
+        std::cerr << "[ERROR] Failed to open audio codec through avcodec_open2 for stream " << vstrm_idx << std::endl;
+        return retCode;
+    }
+
+    /* Set audio settings from codec info */
+    SDL_AudioSpec wanted_spec, aspec;
+    wanted_spec.freq = acodec_ctx->sample_rate;
+    wanted_spec.format = AUDIO_S16SYS;
+    wanted_spec.channels = acodec_ctx->channels;
+    //wanted_spec.silence = 0;
+    wanted_spec.samples = SDL_AUDIO_BUFFER_SIZE;
+    wanted_spec.callback = audio_callback;
+    wanted_spec.userdata = acodec_ctx;
+    std::cout << "[AUDIO] Audio codec info:" << std::endl;
+    std::cout << "          want:" << std::endl;
+    std::cout << "           freq: " << wanted_spec.freq << std::endl;
+    std::cout << "           channels: " << (int)wanted_spec.channels << std::endl;
+
+    /* Open DSL audio */
+    //retCode = SDL_OpenAudio(&wanted_spec, &aspec);
+    SDL_AudioDeviceID adevID;
+    adevID = SDL_OpenAudioDevice(
+        SDL_GetAudioDeviceName(AUDIO_DEVICE_ID, 0),
+        0,
+        &wanted_spec,
+        &aspec,
+        0);
+    std::cout << "          got:" << std::endl;
+    std::cout << "           freq: " << aspec.freq << std::endl;
+    std::cout << "           channels: " << (int)aspec.channels << std::endl;
+
+    if (adevID < 0)
+    {
+        std::cerr << "[ERROR] SDL_OpenAudio: " << SDL_GetError() << std::endl;
+        return adevID;
+    }
+
+    /* Unpause SDL audio */
+    packet_queue_init(&audioq);
+    //SDL_PauseAudio(0);
+    SDL_PauseAudioDevice(adevID, 0);
     
     const int dst_height = codec_strm_ctx->height;
     const int dst_width = codec_strm_ctx->width;
-    std::cout << "W: " << codec_strm_ctx->width << " L: " << codec_strm_ctx->height << std::endl;
+    std::cout << "[VIDEO] Screen info [WxL]: " << codec_strm_ctx->width << "x" << codec_strm_ctx->height << std::endl;
 
     /* Create a SDL window with the specified position, dimensions, and flags */
     SDL_Window* screen = SDL_CreateWindow(
@@ -164,7 +242,7 @@ int main(int argc, char** argv)
     if (!screen)
     {
         /* Could not set video mode */
-       std::cout << "SDL: could not set video mode - exiting" << std::endl;
+       std::cerr << "[ERROR] SDL: could not set video mode - exiting" << std::endl;
         return -1;
     }
 
@@ -209,21 +287,33 @@ int main(int argc, char** argv)
         NULL,
         NULL);
 
-    std::cout << "nb_frames: " << ifmt_ctx->streams[vstrm_idx]->nb_frames << std::endl;
-    std::cout << "duration: " << ifmt_ctx->streams[vstrm_idx]->duration << std::endl;
-    std::cout << "time_base (s): " << av_q2d(ifmt_ctx->streams[vstrm_idx]->time_base) << std::endl;
-    std::cout << "length (s): " << ifmt_ctx->streams[vstrm_idx]->duration * av_q2d(ifmt_ctx->streams[vstrm_idx]->time_base) << std::endl;
-    std::cout << "r_frame_rate: " << av_q2d(ifmt_ctx->streams[vstrm_idx]->r_frame_rate) << std::endl;
-    std::cout << "codec_tag: " << codec_strm_ctx->codec_tag << std::endl;
-    std::cout << "codec_id: " << codec_strm_ctx->codec_id << std::endl;
-    std::cout << "codec name: " << codec->name << std::endl;
-    std::cout << "codec_ctx id name: " << avcodec_find_decoder(codec_ctx->codec_id)->name << std::endl;
+    std::cout << "[DEBUG] Video stream info:" << std::endl;
+    std::cout << "         nb_frames: " << ifmt_ctx->streams[vstrm_idx]->nb_frames << std::endl;
+    std::cout << "         duration: " << ifmt_ctx->streams[vstrm_idx]->duration << std::endl;
+    std::cout << "         time_base (s): " << av_q2d(ifmt_ctx->streams[vstrm_idx]->time_base) << std::endl;
+    std::cout << "         length (s): " << ifmt_ctx->streams[vstrm_idx]->duration * av_q2d(ifmt_ctx->streams[vstrm_idx]->time_base) << std::endl;
+    std::cout << "         r_frame_rate: " << av_q2d(ifmt_ctx->streams[vstrm_idx]->r_frame_rate) << std::endl;
+    std::cout << "         codec_tag: " << codec_strm_ctx->codec_tag << std::endl;
+    std::cout << "         codec_id: " << codec_strm_ctx->codec_id << std::endl;
+    std::cout << "         codec name: " << codec->name << std::endl;
+    std::cout << "         codec_ctx id name: " << avcodec_find_decoder(codec_ctx->codec_id)->name << std::endl;
+    std::cout << "        Audio stream info:" << std::endl;
+    std::cout << "         nb_frames: " << ifmt_ctx->streams[astrm_idx]->nb_frames << std::endl;
+    std::cout << "         duration: " << ifmt_ctx->streams[astrm_idx]->duration << std::endl;
+    std::cout << "         time_base (s): " << av_q2d(ifmt_ctx->streams[astrm_idx]->time_base) << std::endl;
+    std::cout << "         length (s): " << ifmt_ctx->streams[astrm_idx]->duration * av_q2d(ifmt_ctx->streams[astrm_idx]->time_base) << std::endl;
+    std::cout << "         sample_rate: " << acodec_ctx->sample_rate << std::endl;
+    std::cout << "         sample time (s): " << 1.0/acodec_ctx->sample_rate << std::endl;
+    std::cout << "         codec_tag: " << acodec_strm_ctx->codec_tag << std::endl;
+    std::cout << "         codec_id: " << acodec_strm_ctx->codec_id << std::endl;
+    std::cout << "         codec name: " << acodec->name << std::endl;
+    std::cout << "         codec_ctx id name: " << avcodec_find_decoder(acodec_ctx->codec_id)->name << std::endl;
 
     /* Allocate an AVPacket structure */
     AVPacket* packet = av_packet_alloc();
     if (!packet)
     {
-        std::cerr << "Could not allocate video packet" << std::endl;
+        std::cerr << "[ERROR] Could not allocate video packet" << std::endl;
         return -1;
     }
 
@@ -231,13 +321,13 @@ int main(int argc, char** argv)
     AVFrame* frame = av_frame_alloc();
     if (!frame)
     {
-        std::cerr << "Could not allocate video frame" << std::endl;
+        std::cerr << "[ERROR] Could not allocate video frame" << std::endl;
         return -1;
     }
     AVFrame* cvframe = av_frame_alloc();
     if (!cvframe)
     {
-        std::cerr << "Could not allocate cv video frame" << std::endl;
+        std::cerr << "[ERROR] Could not allocate cv video frame" << std::endl;
         return -1;
     }
 
@@ -276,6 +366,7 @@ int main(int argc, char** argv)
     bool FLAG_EXIT = false;
     /* Vars. for general fuinctions */
     double vfps = 0;
+    double afps = 0;
     long sleep_time = 0;
     /* Vars. for CV MODE */
     cv::UMat* uimage = NULL;
@@ -293,28 +384,28 @@ int main(int argc, char** argv)
         /* Is this a packet from the video stream? */
         if (packet->stream_index == vstrm_idx)
         {
-            if (VERBOSE_DEBUG)
+            if (VERBOSE_DEBUG | VERBOSE_DEBUG_VIDEO)
             {
-                std::cout << "stream index: " << packet->stream_index << " --video frame--" << std::endl;
-                std::cout << "packet size: " << packet->size << std::endl;
-                std::cout << "packet duration: " << packet->duration << std::endl;
-                std::cout << "packet length (s): " << packet->duration * av_q2d(ifmt_ctx->streams[vstrm_idx]->time_base) << std::endl;
-                std::cout << "packet position: " << packet->pos << std::endl;
-                std::cout << "packet buffer size: " << packet->buf->size << std::endl;
-                std::cout << "packet data size: " << sizeof(packet->data) / sizeof(packet->data[0]) << std::endl;
+                std::cout << "[VIDEO] stream index: " << packet->stream_index << " --video frame--" << std::endl;
+                std::cout << "[VIDEO] packet size: " << packet->size << std::endl;
+                std::cout << "[VIDEO] packet duration: " << packet->duration << std::endl;
+                std::cout << "[VIDEO] packet length (s): " << packet->duration * av_q2d(ifmt_ctx->streams[vstrm_idx]->time_base) << std::endl;
+                std::cout << "[VIDEO] packet position: " << packet->pos << std::endl;
+                std::cout << "[VIDEO] packet buffer size: " << packet->buf->size << std::endl;
+                std::cout << "[VIDEO] packet data size: " << sizeof(packet->data) / sizeof(packet->data[0]) << std::endl;
             }
             /* Decode video frame */
             av_packet_rescale_ts(packet, ifmt_ctx->streams[vstrm_idx]->time_base, codec_ctx->time_base);
             frameFinished = avcodec_send_packet(codec_ctx, packet);
-            if (VERBOSE_DEBUG)
-                std::cout << "avcodec_send_packet: " << frameFinished << " : " << av_make_error_string(err_buf, AV_ERROR_MAX_STRING_SIZE, frameFinished) << std::endl;
+            if (VERBOSE_DEBUG | VERBOSE_DEBUG_VIDEO)
+                std::cout << "[VIDEO] avcodec_send_packet: " << frameFinished << " : " << av_make_error_string(err_buf, AV_ERROR_MAX_STRING_SIZE, frameFinished) << std::endl;
 
-            /* Get clip fps */
+            /* Get video clip fps */
             vfps = av_q2d(ifmt_ctx->streams[vstrm_idx]->r_frame_rate);
             /* Get clip sleep time in ms (truncate) */
             sleep_time = static_cast<long>(1000.0 / vfps);
-            if (VERBOSE_DEBUG)
-                std::cout << "sleep_time: " << sleep_time << std::endl;
+            if (VERBOSE_DEBUG | VERBOSE_DEBUG_VIDEO)
+                std::cout << "[VIDEO] sleep_time: " << sleep_time << std::endl;
             /* Decoding loop in case a packet has multiple frames */
             while (frameFinished >= 0)
             {
@@ -325,11 +416,11 @@ int main(int argc, char** argv)
                     break;
                 else if (frameFinished < 0)
                 {
-                    std::cout << "Error while decoding." << std::endl;
+                    std::cout << "Error while decoding video." << std::endl;
                     return -1;
                 }
-                if (VERBOSE_DEBUG)
-                    std::cout << "avcodec_receive_frame: " << frameFinished << " : " << av_make_error_string(err_buf, AV_ERROR_MAX_STRING_SIZE, frameFinished) << std::endl;
+                if (VERBOSE_DEBUG | VERBOSE_DEBUG_VIDEO)
+                    std::cout << "[VIDEO] avcodec_receive_frame: " << frameFinished << " : " << av_make_error_string(err_buf, AV_ERROR_MAX_STRING_SIZE, frameFinished) << std::endl;
                 /* Convert frame to OpenCV matrix */
                 sws_scale(sws_ctx, frame->data, frame->linesize, 0, frame->height, cvframe->data, cvframe->linesize);
                 /* CV MODE */
@@ -353,7 +444,19 @@ int main(int argc, char** argv)
                 /* SDL MODE */
                 if(SDL_MODE)
                 {
-                    SDL_WaitEvent(&event);
+                    //SDL_WaitEvent(&event);
+                    SDL_PollEvent(&event);
+                    numkeys = new int(0);
+                    SDL_key_status = SDL_GetKeyboardState(numkeys);
+                    if (numkeys != NULL)
+                        if (*numkeys >= SDL_SCANCODE_ESCAPE)
+                            if (SDL_key_status[SDL_SCANCODE_ESCAPE])
+                            {
+                                FLAG_EXIT = true;
+                                thread_exit = 1;
+                            }
+                    delete numkeys;
+                    
                     switch (event.type)
                     {
                     case REFRESH_EVENT:
@@ -365,16 +468,16 @@ int main(int argc, char** argv)
                             rect.y = 0;
                             rect.w = screen_w;
                             rect.h = screen_h;
-                            if (VERBOSE_DEBUG)
+                            if (VERBOSE_DEBUG | VERBOSE_DEBUG_VIDEO)
                             {
-                                std::cout << "Frame " << av_get_picture_type_char(frame->pict_type);
+                                std::cout << "[VIDEO] Frame " << av_get_picture_type_char(frame->pict_type);
                                 std::cout << " (" << codec_ctx->frame_number << ") pts " << frame->pts;
                                 std::cout << " dts " << frame->pkt_dts << " key_frame " << frame->key_frame;
                                 std::cout << " [coded_picture_number " << frame->coded_picture_number;
                                 std::cout << ", display_picture_number " << frame->display_picture_number;
                                 std::cout << ", " << screen_w << "x" << screen_h << "]" << std::endl;
                             }
-
+                    
                             /* Update a rectangle with new pixel data */
                             SDL_UpdateTexture(
                                 texture,
@@ -382,10 +485,10 @@ int main(int argc, char** argv)
                                 cvframe->data[0],
                                 cvframe->linesize[0]
                             );
-
+                    
                             /* Clear the current rendering target with the drawing color */
                             SDL_RenderClear(renderer);
-
+                    
                             /* Copy a portion of the texture to the current rendering target */
                             SDL_RenderCopy(
                                 renderer,   /* the rendering context */
@@ -394,13 +497,13 @@ int main(int argc, char** argv)
                                 NULL        /* the destination SDL_Rect structure or NULL for the entire rendering */
                                             /* target; the texture will be stretched to fill the given rectangle */
                             );
-
+                    
                             /* Update the screen with any rendering performed since the previous call */
                             SDL_RenderPresent(renderer);
-
+                    
                             /* Use SDL_Delay in milliseconds to allow for cpu scheduling */
-                            if (VERBOSE_DEBUG)
-                                std::cout << "Start SDL sleep: " << sleep_time - 10 << std::endl;
+                            if (VERBOSE_DEBUG | VERBOSE_DEBUG_VIDEO)
+                                std::cout << "[VIDEO] Start SDL video sleep: " << sleep_time - 10 << std::endl;
                             SDL_Delay(sleep_time - 10);
                             break;
                     case SDL_WINDOWEVENT:
@@ -448,23 +551,75 @@ int main(int argc, char** argv)
         }
         else if (packet->stream_index == astrm_idx)
         {
-            if (VERBOSE_DEBUG)
-                std::cout << "stream index: " << packet->stream_index << "--audio frame--" << std::endl;
+            if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO)
+                std::cout << "[AUDIO] stream index: " << packet->stream_index << " --audio frame--" << std::endl;
             /* Do audio stuff */
             /* Ref: https://github.com/leandromoreira/ffmpeg-libav-tutorial#audio---what-you-listen */
+            /* Get audio clip fps */
+            afps = av_q2d(ifmt_ctx->streams[vstrm_idx]->r_frame_rate);
+            if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO)
+                std::cout << "[AUDIO] audio clip fps: " << afps << std::endl;
+            /* Get clip sleep time in ms (truncate) */
+            sleep_time = static_cast<long>(1000.0 / afps);
+            if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO)
+                std::cout << "[AUDIO] audio sleep_time: " << sleep_time << std::endl;
+            /* SDL MODE */
+            if (SDL_MODE)
+            {
+                //SDL_WaitEvent(&event);
+                SDL_PollEvent(&event);
+                switch (event.type)
+                {
+                case REFRESH_EVENT:
+                    packet_queue_put(&audioq, packet);
+                    /* Use SDL_Delay in milliseconds to allow for cpu scheduling */
+                    if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO)
+                        std::cout << "[AUDIO] Start SDL audio sleep: " << sleep_time - 10 << std::endl;
+                    SDL_Delay(sleep_time - 10);
+                    break;
+                case SDL_KEYDOWN:
+                case SDL_KEYUP:
+                    numkeys = new int(0);
+                    SDL_key_status = SDL_GetKeyboardState(numkeys);
+                    if (numkeys != NULL)
+                        if (*numkeys >= SDL_SCANCODE_ESCAPE)
+                            if (SDL_key_status[SDL_SCANCODE_ESCAPE])
+                            {
+                                FLAG_EXIT = true;
+                                thread_exit = 1;
+                            }
+                    delete numkeys;
+                    break;
+                case SDL_QUIT:
+                    thread_exit = 1;
+                case BREAK_EVENT:
+                    FLAG_EXIT = true;
+                    break;
+                default:
+                    break;
+                }
+            }
+
+            if (FLAG_EXIT)
+               break;
         }
+
         av_packet_unref(packet);
         if (FLAG_EXIT)
             break;
     }
 
+    std::cout << "Cleaning up..." << std::endl;
+    SDL_CloseAudioDevice(adevID);
+    SDL_Quit();
     av_frame_free(&cvframe);
     av_frame_free(&frame);
     av_packet_free(&packet);
     sws_freeContext(sws_ctx);
     avcodec_free_context(&codec_ctx);
+    avcodec_free_context(&acodec_ctx);
     avformat_close_input(&ifmt_ctx);
-    SDL_Quit();
+
 
     return 0;
 }
@@ -487,7 +642,7 @@ static void decode(AVCodecContext* dec_ctx, AVFrame* frame, AVPacket* pkt, const
     retCode = avcodec_send_packet(dec_ctx, pkt);
     if (retCode < 0)
     {
-        std::cerr << "Error sending a packet for decoding" << std::endl;
+        std::cerr << "[ERROR] Error sending a packet for decoding" << std::endl;
         exit(1);
     }
 
@@ -498,7 +653,7 @@ static void decode(AVCodecContext* dec_ctx, AVFrame* frame, AVPacket* pkt, const
             return;
         else if (retCode < 0)
         {
-            std::cerr << "Error during decoding" << std::endl;
+            std::cerr << "[ERROR] Error during decoding" << std::endl;
             exit(1);
         }
 
@@ -537,4 +692,21 @@ static void SaveFrame(AVFrame* pFrame, int width, int height, int iFrame)
 
     /* Close file */
     fclose(pFile);
+}
+
+static int refresh_video(void* opaque)
+{
+    thread_exit = 0;
+    while (thread_exit == 0) {
+        SDL_Event event;
+        event.type = REFRESH_EVENT;
+        SDL_PushEvent(&event);
+        SDL_Delay(40);
+    }
+    thread_exit = 0;
+    //Break
+    SDL_Event event;
+    event.type = BREAK_EVENT;
+    SDL_PushEvent(&event);
+    return 0;
 }

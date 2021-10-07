@@ -52,16 +52,30 @@ extern "C" {
 #include <opencv2/highgui.hpp>
 /* SDL2 */
 #include <sdl2/SDL.h>
+#include <sdl2/SDL_thread.h>
 
 /* Global definitions */
 constexpr uint8_t MY_AV_ALLIGN = 1;
 constexpr uint16_t INBUF_SIZE = 4096U;
-constexpr uint8_t VERBOSE_DEBUG = 1;
+constexpr uint8_t VERBOSE_DEBUG = 0;
+constexpr uint8_t VERBOSE_DEBUG_VIDEO = 0;
+constexpr uint8_t VERBOSE_DEBUG_AUDIO = 0;
 constexpr uint8_t OPENCV_MODE = 0;
 constexpr uint8_t SDL_MODE = 1;
+
+//Refresh Event
+constexpr uint16_t REFRESH_EVENT = SDL_USEREVENT + 1U;
+//Break
+constexpr uint16_t BREAK_EVENT = SDL_USEREVENT + 2U;
+
+constexpr uint8_t AUDIO_DRIVER_ID = 1;
+constexpr uint8_t AUDIO_DEVICE_ID = 0;
+
+extern std::atomic<int> thread_exit;
 
 /* Function headers */
 static void pgm_save(unsigned char* buf, int wrap, int xsize, int ysize, const char* filename);
 static void decode(AVCodecContext* dec_ctx, AVFrame* frame, AVPacket* pkt, const char* filename);
 static inline int fill_picture(AVPicture* picture, uint8_t* ptr, enum AVPixelFormat pix_fmt, int width, int height);
 static void SaveFrame(AVFrame* pFrame, int width, int height, int iFrame);
+static int refresh_video(void* opaque);

@@ -5,6 +5,7 @@
 
 # User defined
 *.diagsession
+ref/
 
 # User-specific files
 *.rsuser

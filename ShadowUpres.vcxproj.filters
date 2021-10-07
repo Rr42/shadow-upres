@@ -18,12 +18,18 @@
     <ClCompile Include="ShadowUpres.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="SDLaudio.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="readme.md" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ShadowUpres.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="SDLaudio.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
