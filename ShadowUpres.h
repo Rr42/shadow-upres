@@ -15,7 +15,11 @@
 #pragma comment(lib, "version.lib")
 #pragma comment(lib, "Imm32.lib")
 /* Opencv libs */
+#ifdef _DEBUG
 #pragma comment(lib, "opencv_world451d.lib")
+#else
+#pragma comment(lib, "opencv_world451.lib")
+#endif
 /* ffmpeg libs */
 #pragma comment(lib, "avformat.lib")
 #pragma comment(lib, "avfilter.lib")
@@ -60,6 +64,9 @@ constexpr uint16_t INBUF_SIZE = 4096U;
 constexpr uint8_t VERBOSE_DEBUG = 0;
 constexpr uint8_t VERBOSE_DEBUG_VIDEO = 0;
 constexpr uint8_t VERBOSE_DEBUG_AUDIO = 0;
+constexpr uint8_t VERBOSE_DEBUG_AUDIO_DECODE = 0;
+constexpr uint8_t VERBOSE_DEBUG_AUDIO_BUFFER = 0;
+constexpr uint8_t SKIP_VIDEO_PROCESSING = 1;
 constexpr uint8_t OPENCV_MODE = 0;
 constexpr uint8_t SDL_MODE = 1;
 
@@ -79,3 +86,4 @@ static void decode(AVCodecContext* dec_ctx, AVFrame* frame, AVPacket* pkt, const
 static inline int fill_picture(AVPicture* picture, uint8_t* ptr, enum AVPixelFormat pix_fmt, int width, int height);
 static void SaveFrame(AVFrame* pFrame, int width, int height, int iFrame);
 static int refresh_video(void* opaque);
+static void cleanUpOnFail(int retCode = 0);

@@ -14,6 +14,67 @@
 
 std::atomic<int> thread_exit = 0;
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/* TEST CODE - START */
+float sine_freq = 200.0f;
+float audio_volume = 1.0f;
+float audio_frequency;
+
+void SineAudioCallback(void* userdata, Uint8* stream, int len) {
+    float* buf = (float*)stream;
+    for (int i = 0; i < len / 4; ++i) {
+        buf[i] = (float)(audio_volume * sin(2 * M_PI * i * audio_frequency));
+    }
+    return;
+}
+
+int main1(int argc, char* argv[])
+{
+    if (SDL_Init(SDL_INIT_AUDIO)) {
+        return 1;
+    }
+
+    std::cout << "[SDL] Audio driver: " << SDL_GetCurrentAudioDriver() << std::endl;
+
+    SDL_AudioSpec want, have;
+    SDL_zero(want);
+
+    want.freq = 5000;
+    want.format = AUDIO_F32;
+    want.channels = 2;
+    want.samples = 4096;
+    want.callback = SineAudioCallback;
+
+    std::cout << "[SDL] Desired - frequency: " << want.freq
+        << ", format: f " << SDL_AUDIO_ISFLOAT(want.format) << " s " << SDL_AUDIO_ISSIGNED(want.format) << " be " << SDL_AUDIO_ISBIGENDIAN(want.format) << " sz " << SDL_AUDIO_BITSIZE(want.format)
+        << ", channels: " << (int)want.channels << ", samples: " << want.samples << std::endl;
+
+
+    SDL_AudioDeviceID dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, SDL_AUDIO_ALLOW_ANY_CHANGE);
+
+    if (!dev) {
+        SDL_Quit();
+        return 1;
+    }
+
+
+    std::cout << "[SDL] Desired - frequency: " << have.freq
+        << ", format: f " << SDL_AUDIO_ISFLOAT(have.format) << " s " << SDL_AUDIO_ISSIGNED(have.format) << " be " << SDL_AUDIO_ISBIGENDIAN(have.format) << " sz " << SDL_AUDIO_BITSIZE(have.format)
+        << ", channels: " << (int)have.channels << ", samples: " << have.samples << std::endl;
+
+    audio_frequency = sine_freq / have.freq;
+
+    SDL_PauseAudioDevice(dev, 0);
+    SDL_Delay(10000);
+
+    SDL_CloseAudioDevice(dev);
+    SDL_Quit();
+
+    return 0;
+}
+/* TEST CODE - END */
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 /* ShadowUpres core function */
 int main(int argc, char** argv)
 {
@@ -79,6 +140,9 @@ int main(int argc, char** argv)
         std::cerr << "[ERROR] Audio driver failed to initialize: " << driver_name << std::endl;
         return retCode;
     }
+
+    std::cout << "[AUDIO] Current audio driver: " << SDL_GetCurrentAudioDriver() << std::endl;
+    std::cout << "[VIDEO] Current video driver: " << SDL_GetCurrentVideoDriver() << std::endl;
 
     /* Extract the decoder from video */
     static AVFormatContext* ifmt_ctx = NULL;
@@ -190,8 +254,9 @@ int main(int argc, char** argv)
 
     /* Set audio settings from codec info */
     SDL_AudioSpec wanted_spec, aspec;
+    SDL_zero(wanted_spec);
     wanted_spec.freq = acodec_ctx->sample_rate;
-    wanted_spec.format = AUDIO_S16SYS;
+    wanted_spec.format = acodec_ctx->sample_fmt;
     wanted_spec.channels = acodec_ctx->channels;
     //wanted_spec.silence = 0;
     wanted_spec.samples = SDL_AUDIO_BUFFER_SIZE;
@@ -200,6 +265,7 @@ int main(int argc, char** argv)
     std::cout << "[AUDIO] Audio codec info:" << std::endl;
     std::cout << "          want:" << std::endl;
     std::cout << "           freq: " << wanted_spec.freq << std::endl;
+    std::cout << "           format: " << wanted_spec.format << std::endl;
     std::cout << "           channels: " << (int)wanted_spec.channels << std::endl;
 
     /* Open DSL audio */
@@ -210,9 +276,10 @@ int main(int argc, char** argv)
         0,
         &wanted_spec,
         &aspec,
-        0);
+        SDL_AUDIO_ALLOW_ANY_CHANGE);
     std::cout << "          got:" << std::endl;
     std::cout << "           freq: " << aspec.freq << std::endl;
+    std::cout << "           format: " << aspec.format << std::endl;
     std::cout << "           channels: " << (int)aspec.channels << std::endl;
 
     if (adevID < 0)
@@ -382,7 +449,7 @@ int main(int argc, char** argv)
     while (av_read_frame(ifmt_ctx, packet) >= 0)
     {
         /* Is this a packet from the video stream? */
-        if (packet->stream_index == vstrm_idx)
+        if (packet->stream_index == vstrm_idx && !SKIP_VIDEO_PROCESSING)
         {
             if (VERBOSE_DEBUG | VERBOSE_DEBUG_VIDEO)
             {
@@ -392,7 +459,7 @@ int main(int argc, char** argv)
                 std::cout << "[VIDEO] packet length (s): " << packet->duration * av_q2d(ifmt_ctx->streams[vstrm_idx]->time_base) << std::endl;
                 std::cout << "[VIDEO] packet position: " << packet->pos << std::endl;
                 std::cout << "[VIDEO] packet buffer size: " << packet->buf->size << std::endl;
-                std::cout << "[VIDEO] packet data size: " << sizeof(packet->data) / sizeof(packet->data[0]) << std::endl;
+                std::cout << "[VIDEO] packet data size: " << AV_NUM_DATA_POINTERS << std::endl;
             }
             /* Decode video frame */
             av_packet_rescale_ts(packet, ifmt_ctx->streams[vstrm_idx]->time_base, codec_ctx->time_base);
@@ -610,6 +677,7 @@ int main(int argc, char** argv)
     }
 
     std::cout << "Cleaning up..." << std::endl;
+    thread_exit = 1;
     SDL_CloseAudioDevice(adevID);
     SDL_Quit();
     av_frame_free(&cvframe);
@@ -709,4 +777,10 @@ static int refresh_video(void* opaque)
     event.type = BREAK_EVENT;
     SDL_PushEvent(&event);
     return 0;
+}
+
+void cleanUpOnFail(int retCode)
+{
+    SDL_Quit();
+    exit(retCode);
 }
