@@ -66,9 +66,10 @@ constexpr uint8_t VERBOSE_DEBUG_VIDEO = 0;
 constexpr uint8_t VERBOSE_DEBUG_AUDIO = 0;
 constexpr uint8_t VERBOSE_DEBUG_AUDIO_DECODE = 0;
 constexpr uint8_t VERBOSE_DEBUG_AUDIO_BUFFER = 0;
-constexpr uint8_t SKIP_VIDEO_PROCESSING = 1;
+constexpr uint8_t SKIP_VIDEO_PROCESSING = 0;
 constexpr uint8_t OPENCV_MODE = 0;
-constexpr uint8_t SDL_MODE = 1;
+constexpr uint8_t SDL_VIDEO_MODE = 1;
+constexpr uint8_t SDL_AUDIO_MODE = 1;
 
 //Refresh Event
 constexpr uint16_t REFRESH_EVENT = SDL_USEREVENT + 1U;

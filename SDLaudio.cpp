@@ -239,9 +239,6 @@ int audio_decode_frame(AVCodecContext* aCodecCtx, uint8_t* audio_buf, int buf_si
 
         if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_DECODE)
             std::cout << "[DEBUG][AUDIO_DECODE] audio_pkt_decode_done Sf: " << audio_pkt_decode_done << std::endl;
-
-        global_audio_overflow_buffer = new uint8_t[static_cast<size_t>(buf_size) * 10];
-
     }
     
     /*FILE* outfile = fopen("./output1.txt", "w");
@@ -300,6 +297,16 @@ int audio_decode_frame(AVCodecContext* aCodecCtx, uint8_t* audio_buf, int buf_si
             if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_BUFFER)
                 std::cout << "buffer overflow, storing in global backup" << std::endl;
             
+            if (data_in_global_audio_buffer == 0)
+            {
+                if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_BUFFER)
+                {
+                    std::cout << "allocating size in global backup: " << static_cast<size_t>(buffer_size) * 10 << std::endl;
+                    std::cout << "data_size: " << data_size << std::endl;
+                }
+                global_audio_overflow_buffer = new uint8_t[static_cast<size_t>(data_size) * GLOBAL_AUDIO_BUFFER_SIZE_FACTOR];
+            }
+
             memcpy(global_audio_overflow_buffer, frame.data[0] + (buffer_size - size_in_buf), data_size - (buffer_size - size_in_buf));
             data_in_global_audio_buffer += data_size - (buffer_size - size_in_buf);
             size_in_buf += buffer_size - size_in_buf;
@@ -310,7 +317,11 @@ int audio_decode_frame(AVCodecContext* aCodecCtx, uint8_t* audio_buf, int buf_si
         {
             if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_BUFFER)
                 std::cout << "buffer overflow, storing all in global backup" << std::endl;
-            memcpy(global_audio_overflow_buffer + data_in_global_audio_buffer, frame.data[0], buffer_size);
+
+            if (data_in_global_audio_buffer == 0)
+                global_audio_overflow_buffer = new uint8_t[static_cast<size_t>(data_size) * GLOBAL_AUDIO_BUFFER_SIZE_FACTOR];
+
+            memcpy(global_audio_overflow_buffer + data_in_global_audio_buffer, frame.data[0], data_size);
             data_in_global_audio_buffer += buffer_size;
         }
 

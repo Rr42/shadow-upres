@@ -29,3 +29,4 @@ extern bool FIRST_RUN_FLAG;
 
 extern uint8_t* global_audio_overflow_buffer;
 extern size_t data_in_global_audio_buffer;
+constexpr uint8_t GLOBAL_AUDIO_BUFFER_SIZE_FACTOR = 5U;

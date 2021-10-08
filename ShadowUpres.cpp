@@ -407,7 +407,7 @@ int main(int argc, char** argv)
     /* SDL MODE */
     int numBytes;
     uint8_t* buffer = NULL;
-    if (SDL_MODE)
+    if (SDL_VIDEO_MODE)
     {
         numBytes = av_image_get_buffer_size(
             AV_PIX_FMT_RGB24,
@@ -509,21 +509,10 @@ int main(int argc, char** argv)
                     /* Use SDL to display, Ref: https://github.com/rambodrahmani/ffmpeg-video-player/blob/master/tutorial02/tutorial02.c */
                 }
                 /* SDL MODE */
-                if(SDL_MODE)
+                if(SDL_VIDEO_MODE)
                 {
                     //SDL_WaitEvent(&event);
-                    SDL_PollEvent(&event);
-                    numkeys = new int(0);
-                    SDL_key_status = SDL_GetKeyboardState(numkeys);
-                    if (numkeys != NULL)
-                        if (*numkeys >= SDL_SCANCODE_ESCAPE)
-                            if (SDL_key_status[SDL_SCANCODE_ESCAPE])
-                            {
-                                FLAG_EXIT = true;
-                                thread_exit = 1;
-                            }
-                    delete numkeys;
-                    
+                    SDL_PollEvent(&event);            
                     switch (event.type)
                     {
                     case REFRESH_EVENT:
@@ -631,7 +620,7 @@ int main(int argc, char** argv)
             if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO)
                 std::cout << "[AUDIO] audio sleep_time: " << sleep_time << std::endl;
             /* SDL MODE */
-            if (SDL_MODE)
+            if (SDL_AUDIO_MODE)
             {
                 //SDL_WaitEvent(&event);
                 SDL_PollEvent(&event);
@@ -678,7 +667,8 @@ int main(int argc, char** argv)
 
     std::cout << "Cleaning up..." << std::endl;
     thread_exit = 1;
-    SDL_CloseAudioDevice(adevID);
+    if (SDL_AUDIO_MODE)
+        SDL_CloseAudioDevice(adevID);
     SDL_Quit();
     av_frame_free(&cvframe);
     av_frame_free(&frame);
@@ -687,7 +677,6 @@ int main(int argc, char** argv)
     avcodec_free_context(&codec_ctx);
     avcodec_free_context(&acodec_ctx);
     avformat_close_input(&ifmt_ctx);
-
 
     return 0;
 }
