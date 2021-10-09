@@ -14,6 +14,35 @@
 
 std::atomic<int> thread_exit = 0;
 
+static int get_format_from_sample_fmt(const char** fmt,
+    enum AVSampleFormat sample_fmt)
+{
+    int i;
+    struct sample_fmt_entry {
+        enum AVSampleFormat sample_fmt; const char* fmt_be, * fmt_le;
+    } sample_fmt_entries[] = {
+        { AV_SAMPLE_FMT_U8,  "u8",    "u8"    },
+        { AV_SAMPLE_FMT_S16, "s16be", "s16le" },
+        { AV_SAMPLE_FMT_S32, "s32be", "s32le" },
+        { AV_SAMPLE_FMT_FLT, "f32be", "f32le" },
+        { AV_SAMPLE_FMT_DBL, "f64be", "f64le" },
+    };
+    *fmt = NULL;
+
+    for (i = 0; i < FF_ARRAY_ELEMS(sample_fmt_entries); i++) {
+        struct sample_fmt_entry* entry = &sample_fmt_entries[i];
+        if (sample_fmt == entry->sample_fmt) {
+            *fmt = AV_NE(entry->fmt_be, entry->fmt_le);
+            return 0;
+        }
+    }
+
+    fprintf(stderr,
+        "sample format %s is not supported as output format\n",
+        av_get_sample_fmt_name(sample_fmt));
+    return -1;
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /* TEST CODE - START */
 float sine_freq = 200.0f;
@@ -244,6 +273,7 @@ int main(int argc, char** argv)
         std::cerr << "[ERROR] Failed to open video codec through avcodec_open2 for stream " << vstrm_idx << std::endl;
         return retCode;
     }
+
     /* Initialize the audio codec context to use the given acodec */
     retCode = avcodec_open2(acodec_ctx, acodec, NULL);
     if (retCode < 0)
@@ -253,34 +283,72 @@ int main(int argc, char** argv)
     }
 
     /* Set audio settings from codec info */
+    /* Calculation of number of samples per frame to assign audiop buffer size.
+    ** Sample frequency [Fs]                   - i.e. sample_rate
+    ** Stream duration [D]                     - i.e. duration
+    ** Stream time base [Tb]                   - i.e. time_base
+    ** Total number of frames in stream [Nf]   - i.e. nb_frames
+    ** 
+    ** Total stream time [Ts] = D * Tb
+    ** Total number of samples in stream [Nts] = Fs * Ts
+    ** Expected number of samples per frame [Nspf] = Nts / Nf
+    */
+    uint16_t expected_samples_per_frame = static_cast<uint16_t>(acodec_ctx->sample_rate * ifmt_ctx->streams[astrm_idx]->duration * av_q2d(ifmt_ctx->streams[astrm_idx]->time_base) / ifmt_ctx->streams[astrm_idx]->nb_frames);
     SDL_AudioSpec wanted_spec, aspec;
+    int expected_buffer_size = av_samples_get_buffer_size(NULL,
+        acodec_ctx->channels,
+        expected_samples_per_frame,
+        acodec_ctx->sample_fmt,
+        1);
     SDL_zero(wanted_spec);
     wanted_spec.freq = acodec_ctx->sample_rate;
     wanted_spec.format = acodec_ctx->sample_fmt;
     wanted_spec.channels = acodec_ctx->channels;
     //wanted_spec.silence = 0;
-    wanted_spec.samples = SDL_AUDIO_BUFFER_SIZE;
+    wanted_spec.samples = expected_buffer_size;
     wanted_spec.callback = audio_callback;
     wanted_spec.userdata = acodec_ctx;
+
     std::cout << "[AUDIO] Audio codec info:" << std::endl;
     std::cout << "          want:" << std::endl;
     std::cout << "           freq: " << wanted_spec.freq << std::endl;
     std::cout << "           format: " << wanted_spec.format << std::endl;
+    std::cout << "           samples: " << wanted_spec.samples << std::endl;
     std::cout << "           channels: " << (int)wanted_spec.channels << std::endl;
 
     /* Open DSL audio */
-    //retCode = SDL_OpenAudio(&wanted_spec, &aspec);
     SDL_AudioDeviceID adevID;
     adevID = SDL_OpenAudioDevice(
         SDL_GetAudioDeviceName(AUDIO_DEVICE_ID, 0),
         0,
         &wanted_spec,
         &aspec,
-        SDL_AUDIO_ALLOW_ANY_CHANGE);
+        0);
+
     std::cout << "          got:" << std::endl;
     std::cout << "           freq: " << aspec.freq << std::endl;
     std::cout << "           format: " << aspec.format << std::endl;
+    std::cout << "           samples: " << aspec.samples << std::endl;
     std::cout << "           channels: " << (int)aspec.channels << std::endl;
+
+    //std::cout << "    AUDIO_S8: " << AUDIO_S8 << std::endl;
+    //std::cout << "    AUDIO_U8: " << AUDIO_U8 << std::endl;
+    //std::cout << "    AUDIO_S16LSB: " << AUDIO_S16LSB << std::endl;
+    //std::cout << "    AUDIO_S16MSB: " << AUDIO_S16MSB << std::endl;
+    //std::cout << "    AUDIO_S16SYS: " << AUDIO_S16SYS << std::endl;
+    //std::cout << "    AUDIO_S16: " << AUDIO_S16 << std::endl;
+    //std::cout << "    AUDIO_U16LSB: " << AUDIO_U16LSB << std::endl;
+    //std::cout << "    AUDIO_U16MSB: " << AUDIO_U16MSB << std::endl;
+    //std::cout << "    AUDIO_U16SYS: " << AUDIO_U16SYS << std::endl;
+    //std::cout << "    AUDIO_U16: " << AUDIO_U16 << std::endl;
+    //std::cout << "    AUDIO_S32LSB: " << AUDIO_S32LSB << std::endl;
+    //std::cout << "    AUDIO_S32MSB: " << AUDIO_S32MSB << std::endl;
+    //std::cout << "    AUDIO_S32SYS: " << AUDIO_S32SYS << std::endl;
+    //std::cout << "    AUDIO_S32: " << AUDIO_S32 << std::endl;
+    //std::cout << "    AUDIO_F32LSB: " << AUDIO_F32LSB << std::endl;
+    //std::cout << "    AUDIO_F32MSB: " << AUDIO_F32MSB << std::endl;
+    //std::cout << "    AUDIO_F32SYS: " << AUDIO_F32SYS << std::endl;
+    //std::cout << "    AUDIO_F32: " << AUDIO_F32 << std::endl;
 
     if (adevID < 0)
     {
@@ -370,7 +438,8 @@ int main(int argc, char** argv)
     std::cout << "         time_base (s): " << av_q2d(ifmt_ctx->streams[astrm_idx]->time_base) << std::endl;
     std::cout << "         length (s): " << ifmt_ctx->streams[astrm_idx]->duration * av_q2d(ifmt_ctx->streams[astrm_idx]->time_base) << std::endl;
     std::cout << "         sample_rate: " << acodec_ctx->sample_rate << std::endl;
-    std::cout << "         sample time (s): " << 1.0/acodec_ctx->sample_rate << std::endl;
+    std::cout << "         sample time (s): " << 1.0 / acodec_ctx->sample_rate << std::endl;
+    std::cout << "         samples per frame: " << acodec_ctx->sample_rate * ifmt_ctx->streams[astrm_idx]->duration * av_q2d(ifmt_ctx->streams[astrm_idx]->time_base) / ifmt_ctx->streams[astrm_idx]->nb_frames << std::endl;
     std::cout << "         codec_tag: " << acodec_strm_ctx->codec_tag << std::endl;
     std::cout << "         codec_id: " << acodec_strm_ctx->codec_id << std::endl;
     std::cout << "         codec name: " << acodec->name << std::endl;
@@ -400,33 +469,7 @@ int main(int argc, char** argv)
 
     /* CV MODE */
     std::vector<uint8_t> framebuf(av_image_get_buffer_size(AV_PIX_FMT_RGB24, dst_width, dst_height, MY_AV_ALLIGN));
-    if (OPENCV_MODE)
-    {        
-        fill_picture(reinterpret_cast<AVPicture*>(cvframe), framebuf.data(), AV_PIX_FMT_RGB24, dst_width, dst_height);
-    }
-    /* SDL MODE */
-    int numBytes;
-    uint8_t* buffer = NULL;
-    if (SDL_VIDEO_MODE)
-    {
-        numBytes = av_image_get_buffer_size(
-            AV_PIX_FMT_RGB24,
-            codec_ctx->width,
-            codec_ctx->height,
-            32
-        );
-        buffer = (uint8_t*)av_malloc(numBytes * sizeof(uint8_t));
-
-        av_image_fill_arrays(
-            cvframe->data,
-            cvframe->linesize,
-            buffer,
-            AV_PIX_FMT_RGB24,
-            codec_ctx->width,
-            codec_ctx->height,
-            32
-        );
-    }
+    fill_picture(reinterpret_cast<AVPicture*>(cvframe), framebuf.data(), AV_PIX_FMT_RGB24, dst_width, dst_height);
 
     int frameFinished = 0;
     int ittr = 0;
@@ -605,7 +648,7 @@ int main(int argc, char** argv)
             //        SaveFrame(cvframe, dst_width, dst_height, ittr);
             //}
         }
-        else if (packet->stream_index == astrm_idx)
+        else if (packet->stream_index == astrm_idx && !SKIP_AUDIO_PROCESSING)
         {
             if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO)
                 std::cout << "[AUDIO] stream index: " << packet->stream_index << " --audio frame--" << std::endl;
@@ -667,8 +710,7 @@ int main(int argc, char** argv)
 
     std::cout << "Cleaning up..." << std::endl;
     thread_exit = 1;
-    if (SDL_AUDIO_MODE)
-        SDL_CloseAudioDevice(adevID);
+    SDL_CloseAudioDevice(adevID);
     SDL_Quit();
     av_frame_free(&cvframe);
     av_frame_free(&frame);

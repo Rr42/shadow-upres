@@ -5,6 +5,7 @@
 
 # User defined
 *.diagsession
+.vscode/
 ref/
 
 # User-specific files

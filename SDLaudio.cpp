@@ -3,8 +3,6 @@
 
 PacketQueue audioq;
 bool FIRST_RUN_FLAG = true;
-uint8_t* global_audio_overflow_buffer;
-size_t data_in_global_audio_buffer = 0;
 
 void packet_queue_init(PacketQueue *q)
 {
@@ -96,8 +94,7 @@ static int packet_queue_get(PacketQueue* q, AVPacket* pkt, int block)
 }
 
 
-static void decode(AVCodecContext* dec_ctx, AVPacket* pkt, AVFrame* frame,
-    FILE* outfile)
+static void decode(AVCodecContext* dec_ctx, AVPacket* pkt, AVFrame* frame, FILE* outfile)
 {
     int i, ch;
     int ret, data_size;
@@ -154,19 +151,12 @@ int audio_decode_frame(AVCodecContext* aCodecCtx, uint8_t* audio_buf, int buf_si
 {
     if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_DECODE)
         std::cout << "[DEBUG][AUDIO_DECODE] decode start" << std::endl;
-    //static AVPacket* pkt = av_packet_alloc();
+
     static AVPacket* pkt = NULL;
     static int audio_pkt_decode_done = 0;
     static AVFrame frame;
 
-    size_t data_size = 0;
-
-    uint8_t* audio_buffer = new uint8_t[buf_size]();
-    size_t buffer_size = buf_size;
-    size_t size_in_buf = 0;
-
-    if (!audio_buffer)
-        exit(0);
+    int data_size = 0;
 
     if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_DECODE)
         std::cout << "[DEBUG][AUDIO_DECODE] decode loop TOP" << std::endl;
@@ -174,80 +164,35 @@ int audio_decode_frame(AVCodecContext* aCodecCtx, uint8_t* audio_buf, int buf_si
     if (thread_exit)
         return -1;
 
-    bool skip_packet_processing = false;
+    pkt = av_packet_alloc();
+    if (pkt <= 0)
+        return -1;
 
-    /* Get data from global buffer */
-    if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_BUFFER)
+    int ret = 0;
+    if (SDL_AUDIO_MODE)
+        ret = packet_queue_get(&audioq, pkt, 1);
+    else
+        ret = packet_queue_get(&audioq, pkt, 0);
+
+    if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_DECODE)
+        std::cout << "[DEBUG][AUDIO_DECODE] " << ret << std::endl;
+    if (ret <= 0)
+        return -1;
+
+    if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_DECODE)
     {
-        std::cout << "data_in_global_audio_buffer: " << data_in_global_audio_buffer << std::endl;
-        std::cout << "buf_size: " << buf_size << std::endl;
-    }
-    
-    if (data_in_global_audio_buffer > 0)
-    {
-        if (data_in_global_audio_buffer > buf_size)
-        {
-            if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_BUFFER)
-                std::cout << "too much data in buffer" << std::endl;
-            /* If data in global buffer is more than required */
-            skip_packet_processing = true;
-            memcpy(audio_buffer + size_in_buf, global_audio_overflow_buffer, buffer_size);
-            size_in_buf += buffer_size;
-            data_in_global_audio_buffer -= buffer_size;
-            uint8_t* temp_buffer = new uint8_t[data_in_global_audio_buffer];
-            memcpy(temp_buffer, global_audio_overflow_buffer + buffer_size, data_in_global_audio_buffer);
-            delete[] global_audio_overflow_buffer;
-            global_audio_overflow_buffer = temp_buffer;
-        }
-        else if (data_in_global_audio_buffer <= buf_size)
-        {
-            if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_BUFFER)
-                std::cout << "prefilling data from buffer" << std::endl;
-
-            if (data_in_global_audio_buffer < buf_size)
-                skip_packet_processing = false;
-            else
-                skip_packet_processing = true;
-
-            memcpy(audio_buffer + size_in_buf, global_audio_overflow_buffer, data_in_global_audio_buffer);
-            size_in_buf += data_in_global_audio_buffer;
-            data_in_global_audio_buffer = 0;
-            delete[] global_audio_overflow_buffer;
-        }
+        std::cout << "[DEBUG][AUDIO_DECODE] pkt data size: " << AV_NUM_DATA_POINTERS << std::endl;
+        std::cout << "[DEBUG][AUDIO_DECODE] pkt->size: " << pkt->size << std::endl;
     }
 
-    if (!skip_packet_processing)
-    {
-        pkt = av_packet_alloc();
-        if (pkt <= 0)
-            return -1;
+    /* Send packet to decoder */
+    audio_pkt_decode_done = avcodec_send_packet(aCodecCtx, pkt);
 
-        int ret = packet_queue_get(&audioq, pkt, 1);
-        if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_DECODE)
-            std::cout << "[DEBUG][AUDIO_DECODE] " << ret << std::endl;
-        if (ret <= 0)
-            return -1;
-
-        if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_DECODE)
-        {
-            std::cout << "[DEBUG][AUDIO_DECODE] pkt data size: " << AV_NUM_DATA_POINTERS << std::endl;
-            std::cout << "[DEBUG][AUDIO_DECODE] pkt->size: " << pkt->size << std::endl;
-        }
-
-        /* Send packet to decoder */
-        audio_pkt_decode_done = avcodec_send_packet(aCodecCtx, pkt);
-
-        if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_DECODE)
-            std::cout << "[DEBUG][AUDIO_DECODE] audio_pkt_decode_done Sf: " << audio_pkt_decode_done << std::endl;
-    }
-    
-    /*FILE* outfile = fopen("./output1.txt", "w");
-    decode(aCodecCtx, pkt, &frame,
-        outfile);
-    fclose(outfile);*/
+    if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_DECODE)
+        std::cout << "[DEBUG][AUDIO_DECODE] audio_pkt_decode_done Sf: " << audio_pkt_decode_done << std::endl;
 
     int count = 0;
-    while (audio_pkt_decode_done >= 0 && !skip_packet_processing)
+    while (audio_pkt_decode_done >= 0)
     {
         ++count;
         audio_pkt_decode_done = avcodec_receive_frame(aCodecCtx, &frame);
@@ -259,7 +204,7 @@ int audio_decode_frame(AVCodecContext* aCodecCtx, uint8_t* audio_buf, int buf_si
             break;
         else if (audio_pkt_decode_done < 0)
         {
-            std::cout << "Error while decoding audio." << std::endl;
+            std::cout << "[ERROR][AUDIO_DECODE] Error while decoding audio." << std::endl;
             return -1;
         }
 
@@ -270,94 +215,45 @@ int audio_decode_frame(AVCodecContext* aCodecCtx, uint8_t* audio_buf, int buf_si
             1);
 
         if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_DECODE)
-            std::cout << "[DEBUG][AUDIO_DECODE] data_size: " << data_size  << " | " << buf_size << std::endl;
+        {
+            std::cout << "[DEBUG][AUDIO_DECODE] nb_samples: " << frame.nb_samples << std::endl;
+            std::cout << "[DEBUG][AUDIO_DECODE] data_size: " << data_size << " | buf_size: " << buf_size << std::endl;
+        }
             
         if (data_size <= 0)
             continue;
 
-        /*FILE* outfile = fopen("./output.mp3", "a");
-        decode(aCodecCtx, pkt, &frame,
-            outfile);
-        fclose(outfile);*/
+        assert(data_size*aCodecCtx->channels <= buf_size);
 
-        //assert(data_size <= buf_size);
-
-        if (data_size <= buffer_size - size_in_buf)
-        {
-            /* If size of data from decoder is less than space in buffer */
-            /* Append to buffer */
-            memcpy(audio_buffer + size_in_buf, frame.data[0], data_size); // [0] -> channel | get from aCodecCtx->channels
-            size_in_buf += data_size;
-        }
-        else if (buffer_size - size_in_buf > 0)
-        {
-            /* If cannot write all data fill buffer and exit */
-            memcpy(audio_buffer + size_in_buf, frame.data[0], buffer_size - size_in_buf);
-
-            if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_BUFFER)
-                std::cout << "buffer overflow, storing in global backup" << std::endl;
-            
-            if (data_in_global_audio_buffer == 0)
-            {
-                if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_BUFFER)
-                {
-                    std::cout << "allocating size in global backup: " << static_cast<size_t>(buffer_size) * 10 << std::endl;
-                    std::cout << "data_size: " << data_size << std::endl;
-                }
-                global_audio_overflow_buffer = new uint8_t[static_cast<size_t>(data_size) * GLOBAL_AUDIO_BUFFER_SIZE_FACTOR];
-            }
-
-            memcpy(global_audio_overflow_buffer, frame.data[0] + (buffer_size - size_in_buf), data_size - (buffer_size - size_in_buf));
-            data_in_global_audio_buffer += data_size - (buffer_size - size_in_buf);
-            size_in_buf += buffer_size - size_in_buf;
-
-            break;
-        }
-        else
-        {
-            if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_BUFFER)
-                std::cout << "buffer overflow, storing all in global backup" << std::endl;
-
-            if (data_in_global_audio_buffer == 0)
-                global_audio_overflow_buffer = new uint8_t[static_cast<size_t>(data_size) * GLOBAL_AUDIO_BUFFER_SIZE_FACTOR];
-
-            memcpy(global_audio_overflow_buffer + data_in_global_audio_buffer, frame.data[0], data_size);
-            data_in_global_audio_buffer += buffer_size;
-        }
-
-        //memcpy(audio_buf, frame.data[0], data_size);
-        //memcpy(audio_buf, frame.data[0], data_size);
-        //if (size_in_buf >= buffer_size)
-        //    break;
+        /* If size of data from decoder is less than space in buffer */
+        /* Append to buffer */
+        for (int i = 0; i < data_size; ++i)
+            for (int ch = 0; ch < aCodecCtx->channels; ++ch)
+                audio_buf[i] = frame.data[ch][i]*VOLUME_LEVEL;
+        //memcpy(audio_buffer + size_in_buf, frame.data[0], data_size); // [0] -> channel | get from aCodecCtx->channels
     }
-    if (!skip_packet_processing && pkt->data)
+    if (pkt->data)
         av_packet_free(&pkt);
 
-
     if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_BUFFER)
-        std::cout << "run count: " << count << std::endl;
-
-    //pkt = av_packet_alloc();
-    //if (packet_queue_get(&audioq, pkt, 1) < 0) {
-    //    return -1;
-    //}
-    //audio_pkt_data = pkt->data;
-    //audio_pkt_size = pkt->size;
+        std::cout << "[DEBUG][AUDIO_DECODE] run count: " << count << std::endl;
 
     //std::ofstream outdata("./output.txt", std::ios_base::app);
-    //if (!outdata) { // file couldn't be opened
+    //if (!outdata) 
+    //{ 
+    //    // file couldn't be opened
     //    std::cerr << "Error: file could not be opened" << std::endl;
     //    exit(1);
     //}
     //outdata << "----------------------------------------" << std::endl  << "| ";
-    //for (int i = 0; i < buffer_size; ++i)
-    //    outdata << (int)audio_buffer[i] << " | ";
+    //for (int i = 0; i < buf_size; ++i)
+    //    outdata << (int)audio_buf[i] << " | ";
     //outdata << std::endl <<  "----------------------------------------" << std::endl;
     //outdata.close();
 
     //wav_hdr wav;
-    //wav.ChunkSize = buffer_size + sizeof(wav_hdr) - 8;
-    //wav.Subchunk2Size = buffer_size + sizeof(wav_hdr) - 44;
+    //wav.ChunkSize = buf_size + sizeof(wav_hdr) - 8;
+    //wav.Subchunk2Size = buf_size + sizeof(wav_hdr) - 44;
     //std::ofstream out;
     //if (FIRST_RUN_FLAG)
     //{
@@ -370,16 +266,13 @@ int audio_decode_frame(AVCodecContext* aCodecCtx, uint8_t* audio_buf, int buf_si
     //    out.open("test.wav", std::ios::binary | std::ios_base::app);
     //}
     //int8_t d;
-    //for (int i = 0; i < buffer_size; ++i) {
+    //for (int i = 0; i < buf_size; ++i) 
+    //{
     //    // TODO: read/write in blocks
-    //    d = audio_buffer[i];
+    //    d = audio_buf[i];
     //    out.write(reinterpret_cast<char*>(&d), sizeof(int8_t));
     //}
     //out.close();
-
-    memcpy(audio_buf, audio_buffer, buf_size);
-
-    delete[] audio_buffer;
 
     /* We have data, return it and come back for more later */
     return data_size;
@@ -390,7 +283,7 @@ void audio_callback(void* userdata, Uint8* stream, int len)
     if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO)
         std::cout << "[AUDIO] audio_callback called" << std::endl;
     AVCodecContext* aCodecCtx = (AVCodecContext*)userdata;
-    //uint8_t* audio_buf = new uint8_t[len];
+    uint8_t* audio_buf = new uint8_t[len];
     unsigned int audio_buf_size = 0;
     int audio_size;
 
@@ -398,6 +291,7 @@ void audio_callback(void* userdata, Uint8* stream, int len)
         std::cout << "[DEBUG][AUDIO_DECODE] calling audio decode" << std::endl;
 
     audio_size = audio_decode_frame(aCodecCtx, stream, len);
+    //SDL_MixAudio(stream, audio_buf, len, SDL_MIX_MAXVOLUME);
 
     if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO_DECODE)
         std::cout << "[DEBUG][AUDIO_DECODE] audio decode returned" << std::endl;
@@ -410,7 +304,7 @@ void audio_callback(void* userdata, Uint8* stream, int len)
         memset(stream, 0, len);
     }
 
-    ////delete[] audio_buf;
+    delete[] audio_buf;
 
     //if (VERBOSE_DEBUG | VERBOSE_DEBUG_AUDIO)
     //    std::cout << "[AUDIO] data written: " << audio_size << std::endl;

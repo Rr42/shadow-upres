@@ -67,6 +67,7 @@ constexpr uint8_t VERBOSE_DEBUG_AUDIO = 0;
 constexpr uint8_t VERBOSE_DEBUG_AUDIO_DECODE = 0;
 constexpr uint8_t VERBOSE_DEBUG_AUDIO_BUFFER = 0;
 constexpr uint8_t SKIP_VIDEO_PROCESSING = 0;
+constexpr uint8_t SKIP_AUDIO_PROCESSING = 0;
 constexpr uint8_t OPENCV_MODE = 0;
 constexpr uint8_t SDL_VIDEO_MODE = 1;
 constexpr uint8_t SDL_AUDIO_MODE = 1;
